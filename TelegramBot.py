@@ -1,15 +1,21 @@
-﻿#-*- coding: utf-8 -*-
-from telegram import ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup,KeyboardButton as ReplyKeyboardButton,Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, ConversationHandler,CallbackContext
-import logging,threading,time,requests
-from datetime import datetime, timedelta
+﻿# -*- coding: utf-8 -*-
+import logging
+from telegram import Update, Bot, ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton as ReplyKeyboardButton, Bot
+from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext, Application, filters
+from datetime import datetime
 from alerts_in_ua import Client as AlertsClient
 from selenium import webdriver
+from telegram.ext.filters import Text, Regex
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.firefox import GeckoDriverManager
+import time
 
+driver_path = 'YOUR_GECKODRIVER_PATH'
 telegram_token = "YOUR_TELEGRAM_BOT_TOKEN"
-alerts_client = AlertsClient("YOUR_CLIENT")
-
-DRIVER = 'path/to/phantomjs'
+alerts_client = AlertsClient(token="YOUR_ALERTSINUA_TOKEN")
+bot = Bot(token=telegram_token)
 
 bot_state = {
     'region_mode': None,
@@ -17,165 +23,20 @@ bot_state = {
     'chat_ids': {},
     'region_uid': None
 }
+
 active_alerts_dict = {}
-
-def send_screenshot(chat_id):
-    driver = webdriver.PhantomJS(DRIVER)
-    driver.set_window_size(1920, 1080)
-    driver.get("https://alerts.in.ua")
-    screenshot = driver.get_screenshot_as_png()
-    driver.quit()
-    bot = Bot(token=telegram_token)
-    bot.send_photo(chat_id=chat_id, photo=screenshot)
-      
-map_users = {}
-
-def map_command(update: Update, context: CallbackContext) -> None:
-    chat_id = update.message.chat_id
-    map_users[chat_id] = True
-    send_screenshot(chat_id)
-
-for chat_id in list(map_users.keys()):
-    send_screenshot(chat_id)
-    del map_users[chat_id]
-
-def start(update: Update, context: CallbackContext) -> None:
-    user_id = update.message.from_user.id
-    bot_state['chat_ids'][user_id] = update.message.chat_id
-    update.message.reply_text("Привіт! Я твій бот. Використовуй /settings, щоб налаштувати мене.")
-
-bot = Bot(token=telegram_token)
-
-active_alerts = alerts_client.get_active_alerts()
-
-
-def send_alert_start_message(alert):
-    if bot_state['popup_notifications']:
-        alert_str = f"🚨 Нова тривога! 🚨\n"
-        alert_str += f"Місце: {alert.location_title}\n"
-        if alert.alert_type == 'air_raid':
-            alert_str += "Тип: атака з повітря\n"
-        elif alert.alert_type == 'artillery_shelling':
-            alert_str += "Тип: арт-обстріл\n" 
-        else:
-            alert_str += f"Тип: {alert.alert_type}\n"
-        alert_str += f"Час початку: {alert.started_at}\n"
-        alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
-
-        for chat_id in bot_state['chat_ids'].values():
-            bot.send_message(chat_id=chat_id, text=alert_str)
-
-def send_alert_end_message(alert):
-    if bot_state['popup_notifications']:
-        alert_str = f"✅ Тривога закінчилася! ✅\n"
-        alert_str += f"Місце: {alert.location_title}\n"
-        if alert.alert_type == 'air_raid':
-            alert_str += "Тип: атака з повітря\n"
-        elif alert.alert_type == 'artillery_shelling':
-            alert_str += "Тип: арт-обстріл\n" 
-        else:
-            alert_str += f"Тип: {alert.alert_type}\n"
-        alert_str += f"Час закінчення: {alert.ended_at}\n"
-        alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
-
-        for chat_id in bot_state['chat_ids'].values():
-            bot.send_message(chat_id=chat_id, text=alert_str)
-
-def settings(update: Update, context: CallbackContext) -> None:
-    keyboard = [
-        [ReplyKeyboardButton('🌍 За всю країну'), ReplyKeyboardButton('📍 За регіоном')],
-        [ReplyKeyboardButton('🔔 Ввімкнути сповіщення'), ReplyKeyboardButton('🔕 Вимкнути сповіщення')]
-    ]
-
-    if bot_state['region_mode']:
-        keyboard.append([ReplyKeyboardButton('🌐 Вибрати регіон')])
-
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    if reply_markup:
-        update.message.reply_text("\u2063", reply_markup=reply_markup)
-
-
-def check_alerts(context: CallbackContext) -> None:
-    try:
-        alerts = alerts_client.get_active_alerts()
-    except Exception as e:
-        print(f"Failed to fetch alerts. Error: {e}")
-        return
-
-    for alert in alerts:
-        if alert.id not in active_alerts_dict:
-            active_alerts_dict[alert.id] = alert
-            send_alert_start_message(alert)
-
-    for alert_id in list(active_alerts_dict.keys()):
-        if not any(alert.id == alert_id for alert in alerts):
-            send_alert_end_message(active_alerts_dict[alert_id])
-            del active_alerts_dict[alert_id]
-
+region_select_users = {}
+alerts = {} 
 country_mode_users = {}
 region_mode_users = {}
 notifications_on_users = {}
 notifications_off_users = {}
 select_region_users = {}
+map_users = {}
 alert_users = {}
 
-def handle_text(update: Update, context: CallbackContext) -> None:
-    text = update.message.text
-    chat_id = update.message.chat_id
-
-    if text == "🌍 За всю країну":
-        alert_users[chat_id] = True
-
-    if chat_id in alert_users:
-        bot_state['region_mode'] = False
-        bot_state['region_uid'] = None
-        send_alerts(chat_id)
-        del alert_users[chat_id]
-
-    elif text == "📍 За регіоном" and chat_id not in region_mode_users:
-        region_mode_users[chat_id] = True
-        bot_state['region_mode'] = True
-        del region_mode_users[chat_id]
-
-    elif text == "🔔 Ввімкнути сповіщення" and chat_id not in notifications_on_users:
-        notifications_on_users[chat_id] = True
-        bot_state['popup_notifications'] = True
-        update.message.reply_text("Сповіщення ввімкнуті")
-        del notifications_on_users[chat_id]
-
-    elif text == "🔕 Вимкнути сповіщення" and chat_id not in notifications_off_users:
-        notifications_off_users[chat_id] = True
-        bot_state['popup_notifications'] = False
-        update.message.reply_text("Сповіщення вимкнені")
-        del notifications_off_users[chat_id]
-
-    elif text == "🌐 Вибрати регіон" and chat_id not in select_region_users:
-        select_region_users[chat_id] = True
-        bot_state['region_mode'] = True
-        select_region(update, context)
-        del select_region_users[chat_id]
-
-    else:
-        update.message.reply_text(f"Обрано: {text}")
-
-    settings(update, context)
-
-def send_alerts(chat_id):
-    active_alerts = alerts
-    for alert in active_alerts.values():
-        alert_str = f"Місце: {alert.location_title}\n"
-        if alert.alert_type == 'air_raid':
-            alert_str += "Тип: атака з повітря\n"
-        elif alert.alert_type == 'artillery_shelling':
-            alert_str += "Тип: арт-обстріл\n" 
-        else:
-            alert_str += f"Тип: {alert.alert_type}\n"
-        alert_str += f"Час початку: {alert.started_at}\n"
-        alert_str += f"Останнє оновлення: {alert.updated_at}\n"
-        alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
-
-        bot.send_message(chat_id=chat_id, text=alert_str)
-        
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 region_dict = {
     '3': "Хмельницькій області",
@@ -207,9 +68,7 @@ region_dict = {
     '31': "м. Київ",
 }
 
-region_select_users = {}
-
-def select_region(update: Update, context: CallbackContext) -> None:
+async def select_region(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
     region_select_users[user_id] = update.message.chat_id
     bot_state['region_mode'] = True
@@ -243,59 +102,168 @@ def select_region(update: Update, context: CallbackContext) -> None:
         [InlineKeyboardButton("м. Київ", callback_data='region_31')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("Обери область:", reply_markup=reply_markup)
-   
+    await update.message.reply_text("Обери область:", reply_markup=reply_markup)
 
-def button_click(update: Update, context: CallbackContext) -> None:
-        query = update.callback_query
-        query.answer()
 
-        if query.data == 'back':
-            settings(update, context)
-        elif query.data == 'country':
-            send_alerts()
-        elif query.data.startswith('region_'):
-            region_uid = query.data.split('_')[1]
-            bot_state['region_uid'] = region_uid
-            query.message.reply_text(f"Дивимось тревоги в {region_dict[region_uid]}")
-            query.message.delete()
-            if bot_state['region_mode']:
-                active_alerts = alerts_client.get_active_alerts()
-                alert_status = alerts_client.get_air_raid_alert_status(region_uid).status
-                for user_id, chat_id in region_select_users.items():
-                    if alert_status.startswith('active'):
-                        alert_str = f"Повітряна тривога активна в {region_dict[region_uid]}. "
-                        for alert in active_alerts.alerts:
-                            if alert.location_uid == region_uid:
-                                alert_str = f"Тривога, всі в укриття! Тривога почалась {alert.started_at}\n"
-                        bot.send_message(chat_id=chat_id, text=alert_str)
-                        del region_select_users[user_id]
-                    elif alert_status == 'P':
-                        bot.send_message(chat_id=chat_id, text=f"Часткова тривога в районах чи громадах {region_dict[region_uid]} ")
-                        del region_select_users[user_id]
-                    else:
-                        bot.send_message(chat_id=chat_id, text=f"Схоже, все спокійно в {region_dict[region_uid]} , але будьте обережні")
-                        del region_select_users[user_id]
-                    
-alerts = {} 
-def schedule_check_alerts(context: CallbackContext) -> None:
-    check_alerts(context)
+#WIP    
+service = Service(GeckoDriverManager().install())
+driver = webdriver.Firefox(service=service)
+
+def send_screenshot(chat_id):
+    firefox_options = Options()
+    firefox_options.headless = True
+
+    service = Service(driver_path)
+    driver = webdriver.Firefox(service=service, options=firefox_options)
+    driver.set_window_size(1920, 1080)
+    driver.get("https://alerts.in.ua")
+    
+    time.sleep(2)
+    
+    screenshot = driver.get_screenshot_as_png()
+    driver.quit()
+    
+    bot = Bot(token=telegram_token)
+    bot.send_photo(chat_id=chat_id, photo=screenshot)
+#WIP
+
+def map_command(update: Update, context: CallbackContext) -> None:
+    chat_id = update.message.chat_id
+    send_screenshot(chat_id)
+
+async def start(update: Update, context: CallbackContext) -> None:
+    user_id = update.message.from_user.id
+    bot_state['chat_ids'][user_id] = update.message.chat_id
+    await update.message.reply_text("Привіт! Я твій бот. Використовуй /settings, щоб налаштувати мене.")
+
+
+async def send_alert_start_message(alert):
+    if bot_state['popup_notifications']:
+        alert_str = f"🚨 Нова тривога! 🚨\n"
+        alert_str += f"Місце: {alert.location_title}\n"
+        alert_str += f"Тип: {alert.alert_type.replace('_', ' ').title()}\n"
+        alert_str += f"Час початку: {alert.started_at}\n"
+        alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
+
+        for chat_id in bot_state['chat_ids'].values():
+            await bot.send_message(chat_id=chat_id, text=alert_str)
+
+async def send_alert_end_message(alert):
+    if bot_state['popup_notifications']:
+        alert_str = f"✅ Тривога закінчилася! ✅\n"
+        alert_str += f"Місце: {alert.location_title}\n"
+        alert_str += f"Тип: {alert.alert_type.replace('_', ' ').title()}\n"
+        alert_str += f"Час закінчення: {alert.ended_at}\n"
+        alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
+
+        for chat_id in bot_state['chat_ids'].values():
+            await bot.send_message(chat_id=chat_id, text=alert_str)
+
+
+async def settings(update: Update, context: CallbackContext) -> None:
+    keyboard = [
+        [ReplyKeyboardButton('🌍 Оновити статуси'), ReplyKeyboardButton('📍 За регіоном')],
+        [ReplyKeyboardButton('🔔 Ввімкнути сповіщення'), ReplyKeyboardButton('🔕 Вимкнути сповіщення')],
+        [ReplyKeyboardButton('🗺️ Переглянути карту')]
+    ]
+    if bot_state['region_mode']:
+        keyboard.append([ReplyKeyboardButton('🌐 Вибрати регіон')])
+
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Вибери налаштування:", reply_markup=reply_markup)
+
+
+async def check_alerts(context: CallbackContext) -> None:
+    try:
+        alerts = alerts_client.get_active_alerts()
+    except Exception as e:
+        logger.error(f"Failed to fetch alerts. Error: {e}")
+        return
+
+    for alert in alerts:
+        if alert.id not in active_alerts_dict:
+            active_alerts_dict[alert.id] = alert
+            await send_alert_start_message(alert)
+
+    for alert_id in list(active_alerts_dict.keys()):
+        if not any(alert.id == alert_id for alert in alerts):
+            send_alert_end_message(active_alerts_dict[alert_id])
+            del active_alerts_dict[alert_id]
+
+async def handle_text(update: Update, context: CallbackContext) -> None:
+    text = update.message.text
+    chat_id = update.message.chat_id
+
+    if text == "🌍 Оновити статуси":
+        await send_alerts(chat_id)
+    elif text == "📍 За регіоном":
+        bot_state['region_mode'] = True
+        await settings(update, context)
+    elif text == "🔔 Ввімкнути сповіщення":
+        bot_state['popup_notifications'] = True
+        await update.message.reply_text("Сповіщення ввімкнено")
+    elif text == "🔕 Вимкнути сповіщення":
+        bot_state['popup_notifications'] = False
+        await update.message.reply_text("Сповіщення вимкнено")
+    elif text == "🌐 Вибрати регіон":
+        await select_region(update, context)    
+    elif text == "🗺️ Переглянути карту":
+        await map_command(update, context)    
+
+async def send_alerts(chat_id):
     active_alerts = alerts_client.get_active_alerts()
-
     for alert in active_alerts:
-        alerts[alert.id] = alert
+        alert_str = f"Місце: {alert.location_title}\n"
+        alert_str += f"Тип: {alert.alert_type.replace('_', ' ').title()}\n"
+        alert_str += f"Час початку: {alert.started_at}\n"
+        alert_str += f"Останнє оновлення: {alert.updated_at}\n"
+        alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
 
-def main() -> None:
-    updater = Updater(token=telegram_token)
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("settings", settings))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_text))
-    dispatcher.add_handler(CallbackQueryHandler(button_click))
-    dispatcher.add_handler(MessageHandler(Filters.regex('🌐 Вибрати регіон'), select_region))
-    dispatcher.add_handler(CommandHandler("map", map_command))
-    updater.job_queue.run_repeating(schedule_check_alerts, interval=30, first=4)
-    updater.start_polling()
-    updater.idle()
+        await bot.send_message(chat_id=chat_id, text=alert_str)
+
+async def button_click(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data.startswith('region_'):
+        region_uid = query.data.split('_')[1]
+        bot_state['region_uid'] = region_uid
+        
+        active_alerts = alerts_client.get_active_alerts()
+        
+        region_alerts = []
+        for alert in active_alerts:
+            if alert.location_title == region_dict.get(region_uid, ''):
+                region_alerts.append(alert)
+        #WIP
+        if region_alerts:
+            alert_str = f"🚨 Активні тривоги в {region_dict.get(region_uid, 'невідомій області')}:\n"
+            for alert in region_alerts:
+                alert_str += f"\nТип: {alert.alert_type.replace('_', ' ').title()}\n"
+                alert_str += f"Місце: {alert.location_title}\n"
+                alert_str += f"Час початку: {alert.started_at}\n"
+                alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
+            await query.message.reply_text(alert_str)
+        else:
+            await query.message.reply_text(f"✅ Немає активних тривог в {region_dict.get(region_uid, 'невідомій області')}!")
+        #WIP
+async def schedule_check_alerts(context: CallbackContext) -> None:
+    await check_alerts(context)
+
+def main():
+
+    application = Application.builder().token(telegram_token).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("settings", settings))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(CallbackQueryHandler(button_click))
+    application.add_handler(MessageHandler(filters.Regex('🌐 Вибрати регіон'), select_region))
+    application.add_handler(CommandHandler("map", map_command))
+
+    application.job_queue.run_repeating(schedule_check_alerts, interval=30, first=4)
+
+    application.run_polling()
+
 if __name__ == '__main__':
     main()
