@@ -1,22 +1,21 @@
-Telegram Bot for Alert Notifications
-This bot provides notifications about various emergencies in Ukraine, including air raids and artillery shelling, using Telegram. It uses the alerts.in.ua API to fetch real-time data about alerts and sends them to users based on their preferences.
+## Telegram Bot for Alert Notifications
 
-Features
-Receive notifications about active alerts in Ukraine.
-Toggle notifications on or off.
-Choose between receiving alerts for the entire country or by specific regions.
-View screenshots of alerts from the alerts.in.ua website.
-Libraries and Frameworks Used
-python-telegram-bot: The main library to interact with Telegram's Bot API.
-selenium: Used to capture screenshots from the alerts.in.ua website.
-requests: Used for making HTTP requests.
-alerts_in_ua: A custom library for interacting with the alerts.in.ua API.
-datetime: For handling time-related operations.
-threading: Used to run background tasks like checking alerts.
+## Update:
 
-Usage
-Interact with the bot:
-/start: Initializes the bot and sends a greeting.
-/settings: Shows options for region or country-based alerts, and toggles notifications.
-/map: Sends a screenshot of the alerts.in.ua website.
-Choose a region: You can select specific regions to receive alerts.
+This bot has been updated to support the new version of the **Alerts in UA** and **Telegram Bot API**, as well as to support asynchronous operation.
+
+### Changes:
+
+1. **Support for the new version of the Alerts In UA API**:
+   - The bot now works with the new version of the **Alerts In UA** API.
+
+
+2. **Update to the latest version of the Telegram Bot API**:
+   - The bot now uses the latest features of the Telegram Bot API
+
+3. **Switching to asynchronous communication**:
+   - Switching to asynchronous operations using the `python-telegram-bot` library (version 20.x)
+   - All API requests and interactions with Telegram are now performed asynchronously, which improves performance
+
+4. **WIP New features**:
+   - Working on updating the notification settings and the ability to view active alarms by region.
