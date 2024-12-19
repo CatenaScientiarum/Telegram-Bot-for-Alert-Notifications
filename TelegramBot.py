@@ -1,20 +1,20 @@
 ﻿# -*- coding: utf-8 -*-
-import logging
+import logging, time, pytz
 from telegram import Update, Bot, ReplyKeyboardMarkup, Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton as ReplyKeyboardButton, Bot
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackQueryHandler, CallbackContext, Application, filters
 from datetime import datetime
 from alerts_in_ua import Client as AlertsClient
-from selenium import webdriver
 from telegram.ext.filters import Text, Regex
-from selenium.webdriver.chrome.service import Service
+from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.firefox import GeckoDriverManager
-import time
+from webdriver_manager.chrome import ChromeDriverManager
 
-driver_path = 'YOUR_GECKODRIVER_PATH'
+
 telegram_token = "YOUR_TELEGRAM_BOT_TOKEN"
 alerts_client = AlertsClient(token="YOUR_ALERTSINUA_TOKEN")
+driver_path = 'YOUR_GECKODRIVER(CHROMEDRIVER)_PATH'
 bot = Bot(token=telegram_token)
 
 bot_state = {
@@ -34,6 +34,7 @@ notifications_off_users = {}
 select_region_users = {}
 map_users = {}
 alert_users = {}
+alert_times = {}
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -105,31 +106,31 @@ async def select_region(update: Update, context: CallbackContext) -> None:
     await update.message.reply_text("Обери область:", reply_markup=reply_markup)
 
 
-#WIP    
-service = Service(GeckoDriverManager().install())
-driver = webdriver.Firefox(service=service)
+async def send_screenshot(chat_id):
+    chrome_options = Options()
+    chrome_options.headless = True
+    chrome_options.add_argument('--disable-gpu')
+    chrome_options.add_argument('--no-sandbox')
+    chrome_options.add_argument('--disable-dev-shm-usage')
 
-def send_screenshot(chat_id):
-    firefox_options = Options()
-    firefox_options.headless = True
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
 
-    service = Service(driver_path)
-    driver = webdriver.Firefox(service=service, options=firefox_options)
     driver.set_window_size(1920, 1080)
     driver.get("https://alerts.in.ua")
     
-    time.sleep(2)
     
     screenshot = driver.get_screenshot_as_png()
+    
     driver.quit()
     
     bot = Bot(token=telegram_token)
-    bot.send_photo(chat_id=chat_id, photo=screenshot)
-#WIP
+    await bot.send_photo(chat_id=chat_id, photo=screenshot)
 
-def map_command(update: Update, context: CallbackContext) -> None:
+async def map_command(update: Update, context: CallbackContext) -> None:
     chat_id = update.message.chat_id
-    send_screenshot(chat_id)
+    await send_screenshot(chat_id)  
+    
 
 async def start(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
@@ -193,22 +194,44 @@ async def check_alerts(context: CallbackContext) -> None:
 async def handle_text(update: Update, context: CallbackContext) -> None:
     text = update.message.text
     chat_id = update.message.chat_id
-
+    user_id = update.message.from_user.id
     if text == "🌍 Оновити статуси":
+        bot_state['region_mode'] = False
+        await settings(update, context) 
         await send_alerts(chat_id)
+        country_mode_users[user_id]= chat_id
+        if user_id in region_mode_users:
+            del region_mode_users[user_id]
     elif text == "📍 За регіоном":
         bot_state['region_mode'] = True
         await settings(update, context)
+        region_select_users[user_id] = chat_id
+        if user_id in country_mode_users:
+            del country_mode_users[user_id]
     elif text == "🔔 Ввімкнути сповіщення":
         bot_state['popup_notifications'] = True
         await update.message.reply_text("Сповіщення ввімкнено")
+        notifications_on_users[user_id] = chat_id
+        if user_id in notifications_off_users:
+            del notifications_off_users[user_id]
     elif text == "🔕 Вимкнути сповіщення":
         bot_state['popup_notifications'] = False
         await update.message.reply_text("Сповіщення вимкнено")
+        notifications_off_users[user_id] = chat_id
+        if user_id in notifications_on_users:
+            del notifications_on_users[user_id]
     elif text == "🌐 Вибрати регіон":
-        await select_region(update, context)    
+        bot_state['region_mode'] = False
+        await select_region(update, context)
+        select_region_users[user_id] = chat_id
+        if user_id in select_region_users:
+            del select_region_users[user_id] 
     elif text == "🗺️ Переглянути карту":
-        await map_command(update, context)    
+        map_users[user_id] = chat_id
+        await update.message.reply_text("Зачекайте будь ласка")
+        await map_command(update, context)  
+        if user_id in map_users:
+            del map_users[user_id]
 
 async def send_alerts(chat_id):
     active_alerts = alerts_client.get_active_alerts()
@@ -228,28 +251,67 @@ async def button_click(update: Update, context: CallbackContext) -> None:
     if query.data.startswith('region_'):
         region_uid = query.data.split('_')[1]
         bot_state['region_uid'] = region_uid
-        
-        active_alerts = alerts_client.get_active_alerts()
-        
+
+        try:
+            active_alerts = alerts_client.get_active_alerts()
+        except Exception as e:
+            logger.error(f"Помилка отримання активних тривог: {e}")
+            await query.message.reply_text("⚠️ Виникла помилка під час отримання даних.")
+            return
+
         region_alerts = []
         for alert in active_alerts:
-            if alert.location_title == region_dict.get(region_uid, ''):
+            if str(alert.location_uid) == str(region_uid):
                 region_alerts.append(alert)
-        #WIP
+
+                alert_times[alert.location_uid] = alert.started_at
+
         if region_alerts:
-            alert_str = f"🚨 Активні тривоги в {region_dict.get(region_uid, 'невідомій області')}:\n"
+            alert_str = f"🚨 Активні тривоги для регіону {region_uid}:\n"
             for alert in region_alerts:
-                alert_str += f"\nТип: {alert.alert_type.replace('_', ' ').title()}\n"
-                alert_str += f"Місце: {alert.location_title}\n"
-                alert_str += f"Час початку: {alert.started_at}\n"
-                alert_str += f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
+                alert_str += (
+                    f"\nТип: {alert.alert_type.replace('_', ' ').title()}\n"
+                    f"Місце: {alert.location_title}\n"
+                    f"Час початку: {alert.started_at}\n"
+                    f"Примітки: {alert.notes if alert.notes else 'Немає'}\n"
+                )
             await query.message.reply_text(alert_str)
         else:
-            await query.message.reply_text(f"✅ Немає активних тривог в {region_dict.get(region_uid, 'невідомій області')}!")
-        #WIP
+            await query.message.reply_text(f"✅ Немає активних тривог для регіону {region_uid}!")
+
+
 async def schedule_check_alerts(context: CallbackContext) -> None:
     await check_alerts(context)
+#WIP      
+async def monitor_alerts_status(context: CallbackContext) -> None:
+    try:
+        active_alerts = alerts_client.get_active_alerts()
+    except Exception as e:
+        logger.error(f"Помилка отримання активних тривог: {e}")
+        return
 
+    for region_uid in list(alert_times.keys()):
+        alert = next((alert for alert in active_alerts if str(alert['location_uid']) == str(region_uid)), None)
+        
+        if alert:
+            if alert['finished_at'] is None:
+                logger.info(f"Тривога для регіону {region_uid} ще активна.")
+                continue
+            else:
+                start_time = datetime.fromisoformat(alert['started_at'].replace("Z", "+00:00"))
+                end_time = datetime.fromisoformat(alert['finished_at'].replace("Z", "+00:00")) if alert['finished_at'] else datetime.now(pytz.timezone('Europe/Kyiv'))
+                duration = end_time - start_time
+
+                logger.info(f"Тривога для регіону {region_uid} завершена.")
+                await context.bot.send_message(
+                    chat_id=context.job.context,
+                    text=(f"✅ Тривога для регіону {region_uid} завершена!\n"
+                          f"Час початку: {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                          f"Час завершення: {end_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                          f"Тривала: {str(duration)}."),
+                )
+                del alert_times[region_uid]
+#WIP  
 def main():
 
     application = Application.builder().token(telegram_token).build()
